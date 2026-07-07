@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Ver en mi espacio</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000; font-family: system-ui, -apple-system, sans-serif; }
+
+  #camera-feed {
+    position: fixed; top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+    z-index: 0;
+  }
+  #three-canvas {
+    position: fixed; top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 1;
+    touch-action: none;
+  }
+
+  #start-screen {
+    position: fixed; inset: 0; z-index: 10;
+    background: #111;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: #fff; text-align: center; padding: 24px;
+  }
+  #start-screen h1 { font-size: 20px; margin-bottom: 8px; }
+  #start-screen p { font-size: 14px; color: #aaa; margin-bottom: 24px; max-width: 320px; line-height: 1.5; }
+  #start-btn {
+    background: #fff; color: #111; border: none; border-radius: 24px;
+    padding: 14px 32px; font-size: 15px; font-weight: 600;
+    cursor: pointer;
+  }
+  #error-msg {
+    display: none; color: #ff8080; font-size: 13px; margin-top: 16px; max-width: 300px;
+  }
+
+  #hint {
+    position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+    z-index: 5; background: rgba(0,0,0,0.55); color: #fff;
+    padding: 10px 18px; border-radius: 20px; font-size: 13px;
+    max-width: 85%; text-align: center; transition: opacity 0.4s;
+  }
+
+  #controls {
+    position: fixed; bottom: 24px; left: 0; width: 100%;
+    z-index: 5; display: flex; justify-content: center; gap: 10px;
+    padding: 0 12px; flex-wrap: wrap;
+  }
+  .ctrl-btn {
+    background: rgba(255,255,255,0.9); border: none; border-radius: 50%;
+    width: 46px; height: 46px; font-size: 18px;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  }
+</style>
+</head>
+<body>
+
+<div id="start-screen">
+  <h1>📱 Ver el sillón en tu espacio</h1>
+  <p>Vamos a usar tu cámara y los sensores de movimiento del celular para ubicar el sillón en tu piso. Necesitamos tu permiso para ambos.</p>
+  <button id="start-btn">Empezar</button>
+  <div id="error-msg"></div>
+</div>
+
+<div id="hint" style="display:none;">Tocá el piso donde querés ubicar el sillón</div>
+
+<video id="camera-feed" autoplay playsinline muted></video>
+<canvas id="three-canvas"></canvas>
+
+<div id="controls" style="display:none;">
+  <button class="ctrl-btn" id="btn-smaller">➖</button>
+  <button class="ctrl-btn" id="btn-tilt-x" title="Girar (parar/acostar)">⤴️</button>
+  <button class="ctrl-btn" id="btn-tilt-z" title="Girar (volcar)">🔃</button>
+  <button class="ctrl-btn" id="btn-reset">🔄</button>
+  <button class="ctrl-btn" id="btn-bigger">➕</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
+<script>
+(function () {
+  const startScreen = document.getElementById('start-screen');
+  const startBtn = document.getElementById('start-btn');
+  const errorMsg = document.getElementById('error-msg');
+  const hint = document.getElementById('hint');
+  const controls = document.getElementById('controls');
+  const video = document.getElementById('camera-feed');
+  const canvas = document.getElementById('three-canvas');
+
+  let scene, camera, renderer, model;
+  let modelPlaced = false;
+  let baseScale = 1;
+  const CAMERA_HEIGHT = 1.4; // altura estimada del celular sobre el piso, en metros
+
+  // Orientación del dispositivo -> quaternion de cámara
+  let deviceQuat = new THREE.Quaternion();
+  const zee = new THREE.Vector3(0, 0, 1);
+  const euler = new THREE.Euler();
+  const q0 = new THREE.Quaternion();
+  const q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+  let screenOrientation = window.orientation || 0;
+
+  function setObjectQuaternion(quaternion, alpha, beta, gamma, orient) {
+    euler.set(beta, alpha, -gamma, 'YXZ');
+    quaternion.setFromEuler(euler);
+    quaternion.multiply(q1);
+    quaternion.multiply(q0.setFromAxisAngle(zee, -orient));
+  }
+
+  function onDeviceOrientation(event) {
+    if (event.alpha === null) return;
+    const alpha = THREE.MathUtils.degToRad(event.alpha);
+    const beta = THREE.MathUtils.degToRad(event.beta);
+    const gamma = THREE.MathUtils.degToRad(event.gamma);
+    const orient = THREE.MathUtils.degToRad(screenOrientation);
+    setObjectQuaternion(deviceQuat, alpha, beta, gamma, orient);
+  }
+
+  window.addEventListener('orientationchange', () => {
+    screenOrientation = window.orientation || 0;
+  });
+
+  function initThree() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 1000);
+    camera.position.set(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ canvas: canvas, alpha: true, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x444444, 1.2);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+    dir.position.set(1, 2, 1);
+    scene.add(dir);
+
+    hint.textContent = 'Cargando modelo 3D...';
+    hint.style.display = 'block';
+
+    const dracoLoader = new THREE.DRACOLoader();
+    dracoLoader.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/');
+
+    const loader = new THREE.GLTFLoader();
+    loader.setDRACOLoader(dracoLoader);
+    loader.load('assets/modelo.glb', (gltf) => {
+      model = gltf.scene;
+      const box = new THREE.Box3().setFromObject(model);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+      baseScale = 1;
+      model.visible = false;
+      scene.add(model);
+      hint.textContent = 'Tocá el piso donde querés ubicar el sillón';
+    }, undefined, (err) => {
+      console.error('Error cargando modelo', err);
+      hint.style.background = 'rgba(180,0,0,0.85)';
+      hint.textContent = 'No se pudo cargar el modelo 3D. Revisá que assets/modelo.glb exista y no esté dañado. (' + (err && err.message ? err.message : 'error desconocido') + ')';
+    });
+
+    window.addEventListener('resize', onResize);
+    renderer.setAnimationLoop(animate);
+  }
+
+  function onResize() {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+
+  function animate() {
+    camera.quaternion.copy(deviceQuat);
+    renderer.render(scene, camera);
+  }
+
+  // Tocar la pantalla para ubicar el modelo sobre el "piso" asumido
+  function onTap(clientX, clientY) {
+    if (!model) {
+      hint.style.background = 'rgba(180,120,0,0.85)';
+      hint.textContent = 'El modelo todavía está cargando, esperá unos segundos...';
+      return;
+    }
+
+    const ndc = new THREE.Vector2(
+      (clientX / window.innerWidth) * 2 - 1,
+      -(clientY / window.innerHeight) * 2 + 1
+    );
+
+    const raycaster = new THREE.Raycaster();
+    raycaster.setFromCamera(ndc, camera);
+
+    // Plano de piso asumido a CAMERA_HEIGHT metros por debajo de la cámara
+    const floorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), CAMERA_HEIGHT);
+    const target = new THREE.Vector3();
+    const hit = raycaster.ray.intersectPlane(floorPlane, target);
+
+    if (hit) {
+      model.position.copy(target);
+      model.scale.setScalar(baseScale);
+      model.visible = true;
+      modelPlaced = true;
+      hint.textContent = 'Arrastrá el dedo sobre la pantalla para girarlo';
+      setTimeout(() => { hint.style.display = 'none'; }, 2500);
+    }
+  }
+
+  canvas.addEventListener('click', (e) => {
+    if (!dragMoved) onTap(e.clientX, e.clientY);
+  });
+
+  let touchStartX = 0, touchStartY = 0, dragMoved = false;
+  let modelRotationY = 0, modelRotationX = 0, modelRotationZ = 0;
+  const DRAG_THRESHOLD = 12; // px
+  let pinching = false, pinchStartDist = 0, pinchStartScale = 1;
+
+  function touchDistance(t0, t1) {
+    const dx = t0.clientX - t1.clientX;
+    const dy = t0.clientY - t1.clientY;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+
+  canvas.addEventListener('touchstart', (e) => {
+    if (e.touches && e.touches.length === 2) {
+      pinching = true;
+      dragMoved = true; // evita que dispare un tap al soltar
+      pinchStartDist = touchDistance(e.touches[0], e.touches[1]);
+      pinchStartScale = baseScale;
+    } else if (e.touches && e.touches[0]) {
+      pinching = false;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+      dragMoved = false;
+    }
+  });
+
+  canvas.addEventListener('touchmove', (e) => {
+    if (!model) return;
+
+    if (pinching && e.touches && e.touches.length === 2) {
+      const dist = touchDistance(e.touches[0], e.touches[1]);
+      const factor = dist / pinchStartDist;
+      baseScale = Math.max(0.05, Math.min(10, pinchStartScale * factor));
+      model.scale.setScalar(baseScale);
+      e.preventDefault();
+      return;
+    }
+
+    if (!e.touches || !e.touches[0]) return;
+    const dx = e.touches[0].clientX - touchStartX;
+    const dy = e.touches[0].clientY - touchStartY;
+    if (Math.abs(dx) > DRAG_THRESHOLD || Math.abs(dy) > DRAG_THRESHOLD) {
+      dragMoved = true;
+      if (modelPlaced) {
+        // Girar el modelo según el arrastre horizontal
+        modelRotationY += dx * 0.01;
+        model.rotation.y = modelRotationY;
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        e.preventDefault();
+      }
+    }
+  }, { passive: false });
+
+  canvas.addEventListener('touchend', (e) => {
+    if (e.touches && e.touches.length > 0) {
+      // todavía queda un dedo apoyado (venía de un pellizco); no dispares tap
+      return;
+    }
+    if (!dragMoved && e.changedTouches && e.changedTouches[0]) {
+      onTap(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+    }
+    dragMoved = false;
+    pinching = false;
+  });
+
+  document.getElementById('btn-bigger').addEventListener('click', () => {
+    if (!model) return;
+    baseScale *= 1.1;
+    model.scale.setScalar(baseScale);
+  });
+  document.getElementById('btn-smaller').addEventListener('click', () => {
+    if (!model) return;
+    baseScale *= 0.9;
+    model.scale.setScalar(baseScale);
+  });
+  document.getElementById('btn-tilt-x').addEventListener('click', () => {
+    if (!model) return;
+    modelRotationX += Math.PI / 2;
+    model.rotation.x = modelRotationX;
+  });
+  document.getElementById('btn-tilt-z').addEventListener('click', () => {
+    if (!model) return;
+    modelRotationZ += Math.PI / 2;
+    model.rotation.z = modelRotationZ;
+  });
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    if (!model) return;
+    model.visible = false;
+    modelPlaced = false;
+    modelRotationY = 0;
+    modelRotationX = 0;
+    modelRotationZ = 0;
+    model.rotation.set(0, 0, 0);
+    hint.style.background = 'rgba(0,0,0,0.55)';
+    hint.textContent = 'Tocá el piso donde querés ubicar el sillón';
+    hint.style.display = 'block';
+  });
+
+  async function startExperience() {
+    try {
+      // Cámara trasera
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' } },
+        audio: false
+      });
+      video.srcObject = stream;
+
+      // Permiso de orientación (necesario en iOS 13+, no molesta en Android)
+      if (typeof DeviceOrientationEvent !== 'undefined' &&
+          typeof DeviceOrientationEvent.requestPermission === 'function') {
+        const perm = await DeviceOrientationEvent.requestPermission();
+        if (perm !== 'granted') {
+          throw new Error('Permiso de sensores de movimiento denegado.');
+        }
+      }
+
+      window.addEventListener('deviceorientation', onDeviceOrientation);
+
+      startScreen.style.display = 'none';
+      hint.style.display = 'block';
+      controls.style.display = 'flex';
+
+      try {
+        initThree();
+      } catch (initErr) {
+        console.error(initErr);
+        startScreen.style.display = 'flex';
+        errorMsg.style.display = 'block';
+        errorMsg.textContent = 'Se cargó la cámara y los sensores bien, pero hubo un error preparando el modelo 3D: ' + initErr.message;
+      }
+
+    } catch (err) {
+      console.error(err);
+      errorMsg.style.display = 'block';
+      errorMsg.textContent = 'No pudimos acceder a la cámara o a los sensores. Revisá los permisos del navegador e intentá de nuevo. (' + err.message + ')';
+    }
+  }
+
+  startBtn.addEventListener('click', startExperience);
+})();
+</script>
+
+</body>
+</html>
