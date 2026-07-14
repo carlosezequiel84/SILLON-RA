@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Ver en mi espacio</title>
+
+<!-- model-viewer: componente de Google, AR real vía ARKit (iOS) / ARCore (Android) -->
+<script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/3.5.0/model-viewer.min.js"></script>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { width: 100%; height: 100%; background: #f4f4f4; font-family: system-ui, -apple-system, sans-serif; }
+
+  model-viewer {
+    width: 100%;
+    height: 100%;
+    --poster-color: #f4f4f4;
+    --progress-bar-color: #111;
+  }
+
+  /* Botón propio "Ver en mi espacio" dentro del model-viewer */
+  #ar-button {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #111;
+    color: #fff;
+    border: none;
+    border-radius: 24px;
+    padding: 14px 28px;
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  }
+
+  #ar-not-supported {
+    display: none;
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(180,0,0,0.9);
+    color: #fff;
+    padding: 12px 20px;
+    border-radius: 16px;
+    font-size: 13px;
+    max-width: 85%;
+    text-align: center;
+  }
+
+  #hint-top {
+    position: absolute;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.55);
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 20px;
+    font-size: 13px;
+    max-width: 85%;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<model-viewer
+  id="mv"
+  src="assets/modelo.glb"
+  ios-src="assets/modelo.usdz"
+  alt="Sillón en 3D"
+  ar
+  ar-modes="quick-look scene-viewer webxr"
+  ar-placement="floor"
+  ar-scale="auto"
+  camera-controls
+  touch-action="pan-y"
+  shadow-intensity="1"
+  auto-rotate
+  exposure="1"
+>
+  <div slot="poster" style="display:flex;align-items:center;justify-content:center;height:100%;color:#666;font-size:14px;">
+    Cargando modelo 3D...
+  </div>
+
+  <div id="hint-top" slot="progress-bar">Cargando modelo 3D...</div>
+
+  <button id="ar-button" slot="ar-button">
+    📱 Ver en mi espacio
+  </button>
+
+  <div id="ar-not-supported">
+    Tu navegador no soporta AR. Probá abrir este link directamente desde Safari (iPhone) o Chrome (Android), no desde una app como Instagram/WhatsApp.
+  </div>
+</model-viewer>
+
+<script>
+  const mv = document.getElementById('mv');
+  const notSupported = document.getElementById('ar-not-supported');
+  const arButton = document.getElementById('ar-button');
+
+  mv.addEventListener('ar-status', (event) => {
+    if (event.detail.status === 'not-presenting') {
+      // volvió de la sesión AR o no pudo iniciarla
+    }
+  });
+
+  // Si el dispositivo no soporta ningún modo de AR, avisamos
+  window.addEventListener('load', () => {
+    setTimeout(() => {
+      if (mv.canActivateAR === false) {
+        arButton.style.display = 'none';
+        notSupported.style.display = 'block';
+      }
+    }, 800);
+  });
+</script>
+
+</body>
+</html>
